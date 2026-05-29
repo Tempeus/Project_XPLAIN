@@ -13,7 +13,7 @@ interface QuizCardProps {
   inline?: boolean
 }
 
-export default function QuizCard({ topic, onXP, onClose, inline = false }: QuizCardProps) {
+export default function QuizCard({ topic, onXP, onClose }: QuizCardProps) {
   const [questions, setQuestions] = useState<QuizQuestion[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [selectedOption, setSelectedOption] = useState<number | null>(null)

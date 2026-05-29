@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { generateELI5Content } from '@/lib/claude/generate'
+import { streamELI5Content } from '@/lib/claude/generate'
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
 
     const supabase = await createClient()
 
-    // Check cache first
+    // Cache hit — return immediately as JSON
     const { data: cached } = await supabase
       .from('cards')
       .select('*')
@@ -31,22 +31,42 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Generate new content
-    const content = await generateELI5Content(topicName, topicDescription)
-    content.topicId = topicId
+    // Cache miss — stream from Claude.
+    // Tee the stream: one branch goes to the client, one accumulates for caching.
+    const claudeStream = streamELI5Content(topicName, topicDescription)
+    const [clientStream, cacheStream] = claudeStream.tee()
 
-    // Cache in DB
-    await supabase.from('cards').insert({
-      topic_id: topicId,
-      title: content.title,
-      hook: content.hook,
-      explanation: content.explanation,
-      key_points: content.keyPoints,
-      fun_fact: content.funFact,
-      analogy: content.analogy,
+    // Consume the cache branch in the background
+    ;(async () => {
+      const reader = cacheStream.getReader()
+      const decoder = new TextDecoder()
+      let accumulated = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        accumulated += decoder.decode(value, { stream: true })
+      }
+
+      const jsonMatch = accumulated.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return
+      try {
+        const content = JSON.parse(jsonMatch[0])
+        await supabase.from('cards').insert({
+          topic_id: topicId,
+          title: content.title,
+          hook: content.hook,
+          explanation: content.explanation,
+          key_points: content.keyPoints,
+          fun_fact: content.funFact,
+          analogy: content.analogy,
+        })
+      } catch {}
+    })().catch(console.error)
+
+    return new Response(clientStream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     })
-
-    return NextResponse.json(content)
   } catch (error) {
     console.error('Generate error:', error)
     return NextResponse.json({ error: 'Failed to generate content' }, { status: 500 })

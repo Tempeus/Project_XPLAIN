@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { BookOpen, Brain, Bookmark, BookmarkCheck, ChevronDown, ChevronUp, Lightbulb, Circle } from 'lucide-react'
 import { cn, getGradientForCategory, getCategoryAccentColor, getCategoryLabel, getCategoryEmoji } from '@/lib/utils'
@@ -28,7 +28,7 @@ export default function TopicCard({ topic, index }: TopicCardProps) {
   const hasLoaded = useRef(false)
 
   async function loadContent() {
-    if (hasLoaded.current || loading) return
+    if (hasLoaded.current) return
     hasLoaded.current = true
     setLoading(true)
     try {
@@ -41,8 +41,26 @@ export default function TopicCard({ topic, index }: TopicCardProps) {
           topicDescription: topic.description,
         }),
       })
-      const data = await res.json()
-      setContent(data)
+
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        // Cache hit — parse directly
+        const data = await res.json()
+        setContent(data)
+      } else if (res.body) {
+        // Streaming — accumulate chunks, then parse JSON
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let text = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          text += decoder.decode(value, { stream: true })
+        }
+        const jsonMatch = text.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          setContent({ ...JSON.parse(jsonMatch[0]), topicId: topic.id })
+        }
+      }
     } catch {
       hasLoaded.current = false
     } finally {
@@ -80,6 +98,11 @@ export default function TopicCard({ topic, index }: TopicCardProps) {
     } catch {}
   }
 
+  useEffect(() => {
+    loadContent()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const accentColor = getCategoryAccentColor(topic.category)
   const gradient = getGradientForCategory(topic.category)
 
@@ -94,8 +117,6 @@ export default function TopicCard({ topic, index }: TopicCardProps) {
         border: `1px solid ${accentColor}25`,
         boxShadow: `0 4px 40px ${accentColor}10`,
       }}
-      viewport={{ once: true }}
-      onViewportEnter={loadContent}
     >
       {/* XP Float animations */}
       <AnimatePresence>
